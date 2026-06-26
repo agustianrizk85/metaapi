@@ -1,0 +1,9 @@
+/metaapi
+/metaapi.exe
+*.exe
+.env
+*.log
+test.out
+test.err
+/dist
+*.err
