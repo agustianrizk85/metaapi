@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"metaapi/internal/store"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -28,10 +30,24 @@ type MetaHandler struct {
 	envAdAccount  string // pinned ad account id (without act_), optional
 	http          *http.Client
 
+	// WhatsApp inbox: incoming messages arrive only via the Cloud API webhook,
+	// so they're persisted here and read back for the inbox. Nil until enabled.
+	wa                 *store.Store
+	waVerifyToken      string // webhook verify token (must match Meta App config)
+	appSecret          string // verifies webhook X-Hub-Signature-256 (optional)
+
 	// Short-lived response cache: the Ads/Detail pulls fan out to dozens of
 	// Graph calls (20s+). A small TTL keeps repeated loads instant.
 	cmu   sync.Mutex
 	cache map[string]cachedResp
+}
+
+// EnableWhatsAppInbox wires the persistence + webhook secrets for the WhatsApp
+// inbox. Called once at startup after the DB is opened.
+func (h *MetaHandler) EnableWhatsAppInbox(st *store.Store, verifyToken, appSecret string) {
+	h.wa = st
+	h.waVerifyToken = verifyToken
+	h.appSecret = appSecret
 }
 
 type cachedResp struct {

@@ -8,8 +8,8 @@ import (
 )
 
 // Config holds the runtime settings, all sourced from the environment (.env in
-// dev). This service is intentionally dependency-light: no database, a single
-// Meta System User token, and an optional static frontend directory.
+// dev). A single Meta System User token powers the Graph proxy; a small SQLite
+// DB persists WhatsApp conversations (incoming messages arrive only via webhook).
 type Config struct {
 	AppPort string
 
@@ -18,6 +18,17 @@ type Config struct {
 	MetaAPIVersion string
 	MetaBusinessID string
 	MetaAdAccount  string // optional pinned ad account id (without act_)
+	MetaAppSecret  string // META_APP_SECRET — verifies webhook X-Hub-Signature-256 (optional)
+
+	// WhatsApp Cloud API webhook. Incoming WA messages arrive only via webhook
+	// (the Graph API has no conversation-history endpoint for WhatsApp), so we
+	// persist them. The verify token must match what's entered in the Meta App
+	// webhook config.
+	WAWebhookVerifyToken string // WA_WEBHOOK_VERIFY_TOKEN
+
+	// Storage. metaapi gained a small DB to persist WhatsApp conversations so the
+	// dashboard (and a future Android client) can read message history.
+	DBPath string // WA_DB_PATH — SQLite file
 
 	// Auth. Must match the marketing backend's JWT_SECRET so its tokens validate
 	// here (unified login — metaapi issues no tokens of its own).
@@ -54,6 +65,10 @@ func Load() *Config {
 		MetaAPIVersion: getEnv("META_API_VERSION", "v21.0"),
 		MetaBusinessID: getEnv("META_BUSINESS_ID", ""),
 		MetaAdAccount:  getEnv("META_AD_ACCOUNT_ID", ""),
+		MetaAppSecret:  getEnv("META_APP_SECRET", ""),
+
+		WAWebhookVerifyToken: getEnv("WA_WEBHOOK_VERIFY_TOKEN", "greenpark-wa-webhook"),
+		DBPath:               getEnv("WA_DB_PATH", "./metaapi.db"),
 
 		JWTSecret: getEnv("JWT_SECRET", "dev-secret"),
 

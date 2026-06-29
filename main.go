@@ -17,6 +17,7 @@ import (
 	"metaapi/internal/auth"
 	"metaapi/internal/config"
 	"metaapi/internal/meta"
+	"metaapi/internal/store"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -30,12 +31,28 @@ func main() {
 
 	metaH := meta.NewMetaHandler(cfg.MetaToken, cfg.MetaAPIVersion, cfg.MetaBusinessID, cfg.MetaAdAccount)
 
+	// WhatsApp inbox storage — incoming messages arrive only via webhook, so we
+	// persist them. If the DB can't open we log and run without the inbox rather
+	// than crash the Graph proxy.
+	if st, err := store.Open(cfg.DBPath); err != nil {
+		log.Printf("WARNING: WhatsApp inbox disabled — DB open failed: %v", err)
+	} else {
+		metaH.EnableWhatsAppInbox(st, cfg.WAWebhookVerifyToken, cfg.MetaAppSecret)
+		log.Printf("WhatsApp inbox enabled (db=%s)", cfg.DBPath)
+	}
+
 	r := gin.Default()
 	r.Use(corsMiddleware(cfg.CORSOrigins))
 
 	api := r.Group("/api")
 	{
 		api.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+
+		// WhatsApp Cloud API webhook — PUBLIC (Meta calls it, no JWT). GET is the
+		// subscription handshake; POST delivers inbound messages + statuses
+		// (authenticity checked via the app-secret signature).
+		api.GET("/meta/whatsapp/webhook", metaH.WebhookVerify)
+		api.POST("/meta/whatsapp/webhook", metaH.WebhookReceive)
 
 		// Auth is unified with the marketing backend: tokens it issues are
 		// validated here against the shared JWT secret. metaapi has no login.
@@ -46,6 +63,9 @@ func main() {
 			authed.GET("/meta/ads/detail", metaH.AdsDetail)
 			authed.GET("/meta/ads/campaign", metaH.AdsCampaign)
 			authed.GET("/meta/whatsapp", metaH.WhatsApp)
+			authed.GET("/meta/whatsapp/conversations", metaH.WAConversations)
+			authed.GET("/meta/whatsapp/messages", metaH.WAMessages)
+			authed.POST("/meta/whatsapp/send", metaH.WASend)
 			authed.GET("/meta/instagram", metaH.Instagram)
 			authed.GET("/meta/instagram/conversations", metaH.IGConversations)
 			authed.GET("/meta/instagram/messages", metaH.IGMessages)
