@@ -59,6 +59,16 @@ func main() {
 		authed := api.Group("")
 		authed.Use(auth.Middleware(cfg.JWTSecret))
 		{
+			// Multi-account connection management (paste System User token).
+			// metaapi aggregates data across every connection.
+			authed.GET("/meta/oauth/config", metaH.Config)
+			authed.PUT("/meta/oauth/config", metaH.SaveConfig)
+			authed.GET("/meta/connections", metaH.ListConnections)
+			authed.POST("/meta/connections/manual", metaH.ConnectManual)
+			authed.POST("/meta/connections/:id/activate", metaH.Activate)
+			authed.PATCH("/meta/connections/:id", metaH.UpdateConnection)
+			authed.DELETE("/meta/connections/:id", metaH.Disconnect)
+
 			authed.GET("/meta/ads", metaH.Ads)
 			authed.GET("/meta/ads/detail", metaH.AdsDetail)
 			authed.GET("/meta/ads/campaign", metaH.AdsCampaign)

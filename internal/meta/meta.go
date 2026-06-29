@@ -118,13 +118,69 @@ func rangePreset(c *gin.Context) string {
 	}
 }
 
-// clients returns the Graph client(s) to aggregate over. This standalone build
-// uses the single env System User token.
+// clients returns ONE Graph client per connected account so every data endpoint
+// aggregates across all accounts (total spend, all campaigns, all WABAs/IG). The
+// accounts come from the DB-backed connections (paste-token / OAuth); the single
+// env token is only a fallback when none are connected yet. Per-connection
+// businessID / adAccount override the env values when set.
 func (h *MetaHandler) clients() []metaClient {
-	if h.envToken == "" {
-		return nil
+	var out []metaClient
+	if h.wa != nil {
+		if conns, err := h.wa.ListConnections(); err == nil {
+			for _, cn := range conns {
+				if cn.AccessToken == "" {
+					continue
+				}
+				businessID := h.envBusinessID
+				if cn.BusinessID != "" {
+					businessID = cn.BusinessID
+				}
+				label := cn.Label
+				if label == "" {
+					label = cn.MetaUserName
+				}
+				out = append(out, metaClient{token: cn.AccessToken, ver: h.ver, businessID: businessID, adAccount: cn.AdAccountID, label: label, http: h.http})
+			}
+		}
 	}
-	return []metaClient{{token: h.envToken, ver: h.ver, businessID: h.envBusinessID, adAccount: h.envAdAccount, http: h.http}}
+	if len(out) == 0 && h.envToken != "" {
+		out = append(out, metaClient{token: h.envToken, ver: h.ver, businessID: h.envBusinessID, adAccount: h.envAdAccount, http: h.http})
+	}
+	return out
+}
+
+// connSig is a cache-key fragment that changes when the connection set or env
+// token changes, so connect/disconnect/edit busts the short-lived cache.
+func (h *MetaHandler) connSig() string {
+	if h.wa == nil {
+		return "env"
+	}
+	conns, err := h.wa.ListConnections()
+	if err != nil || len(conns) == 0 {
+		return "env"
+	}
+	parts := make([]string, 0, len(conns))
+	for _, cn := range conns {
+		parts = append(parts, fmt.Sprintf("%d@%d", cn.ID, cn.UpdatedAt.Unix()))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+// clientForPhone returns the connected account whose token can access the given
+// WhatsApp phone number id, so a reply goes out from the account that actually
+// owns that number (multi-account). Falls back to the first client.
+func (h *MetaHandler) clientForPhone(phoneNumberID string) (metaClient, bool) {
+	cs := h.clients()
+	for _, mc := range cs {
+		if _, err := mc.graph("/"+phoneNumberID, map[string]string{"fields": "id"}); err == nil {
+			return mc, true
+		}
+	}
+	if len(cs) > 0 {
+		return cs[0], true
+	}
+	return metaClient{}, false
 }
 
 // graph performs an authenticated GET against the Graph API.
@@ -250,7 +306,7 @@ func (h *MetaHandler) Ads(c *gin.Context) {
 		return
 	}
 	preset := rangePreset(c)
-	ckey := "ads:" + preset + ":" + strconv.Itoa(len(clients))
+	ckey := "ads:" + preset + ":" + h.connSig()
 	if b, ok := h.getCache(ckey, 90*time.Second); ok {
 		c.JSON(http.StatusOK, b)
 		return
@@ -533,7 +589,7 @@ func (h *MetaHandler) AdsDetail(c *gin.Context) {
 		return
 	}
 	preset := rangePreset(c)
-	ckey := "detail:" + preset + ":" + strconv.Itoa(len(clients))
+	ckey := "detail:" + preset + ":" + h.connSig()
 	if b, ok := h.getCache(ckey, 90*time.Second); ok {
 		c.JSON(http.StatusOK, b)
 		return
@@ -939,31 +995,37 @@ func (h *MetaHandler) WhatsApp(c *gin.Context) {
 	seen := map[string]bool{}
 	var firstErr string
 	for _, mc := range clients {
-		if mc.businessID == "" {
-			continue
+		bizIDs, derr := mc.discoverBusinessIDs()
+		if derr != nil && len(bizIDs) == 0 && firstErr == "" {
+			firstErr = derr.Error()
 		}
-		r, err := mc.graph("/"+mc.businessID+"/owned_whatsapp_business_accounts", map[string]string{"fields": "id,name,timezone_id,message_template_namespace"})
-		if err != nil {
-			if firstErr == "" {
-				firstErr = err.Error()
+		for _, bid := range bizIDs {
+			// Owned + client (shared) WABAs across each token's businesses.
+			for _, edge := range []string{"owned_whatsapp_business_accounts", "client_whatsapp_business_accounts"} {
+				r, err := mc.graph("/"+bid+"/"+edge, map[string]string{"fields": "id,name,timezone_id,message_template_namespace"})
+				if err != nil {
+					if firstErr == "" {
+						firstErr = err.Error()
+					}
+					continue
+				}
+				for _, it := range dataList(r) {
+					w, _ := it.(map[string]any)
+					id := gstr(w, "id")
+					if id == "" || seen[id] {
+						continue
+					}
+					seen[id] = true
+					entry := gin.H{"id": id, "name": gstr(w, "name")}
+					if ph, e := mc.graph("/"+id+"/phone_numbers", map[string]string{"fields": "display_phone_number,verified_name,quality_rating,code_verification_status,platform_type"}); e == nil {
+						entry["phones"] = dataList(ph)
+					}
+					if tpl, e := mc.graph("/"+id+"/message_templates", map[string]string{"fields": "name,status,category", "limit": "100"}); e == nil {
+						entry["templates"] = dataList(tpl)
+					}
+					wabas = append(wabas, entry)
+				}
 			}
-			continue
-		}
-		for _, it := range dataList(r) {
-			w, _ := it.(map[string]any)
-			id := gstr(w, "id")
-			if id == "" || seen[id] {
-				continue
-			}
-			seen[id] = true
-			entry := gin.H{"id": id, "name": gstr(w, "name")}
-			if ph, e := mc.graph("/"+id+"/phone_numbers", map[string]string{"fields": "display_phone_number,verified_name,quality_rating,code_verification_status,platform_type"}); e == nil {
-				entry["phones"] = dataList(ph)
-			}
-			if tpl, e := mc.graph("/"+id+"/message_templates", map[string]string{"fields": "name,status,category", "limit": "100"}); e == nil {
-				entry["templates"] = dataList(tpl)
-			}
-			wabas = append(wabas, entry)
 		}
 	}
 	if len(wabas) == 0 && firstErr != "" {
@@ -971,6 +1033,49 @@ func (h *MetaHandler) WhatsApp(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"configured": true, "wabas": wabas})
+}
+
+// discoverBusinessIDs lists the businesses to scan for WhatsApp accounts for one
+// token: the pinned/env business id (if any), businesses via /me/businesses, and
+// the business behind each Page (/me/accounts?fields=business). The Page path is
+// the only one that resolves a System User token (its /me/businesses is empty).
+func (mc metaClient) discoverBusinessIDs() ([]string, error) {
+	ids := []string{}
+	seen := map[string]bool{}
+	add := func(id string) {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	add(mc.businessID)
+
+	var firstErr error
+	if r, err := mc.graph("/me/businesses", map[string]string{"fields": "id", "limit": "100"}); err == nil {
+		for _, it := range dataList(r) {
+			if b, ok := it.(map[string]any); ok {
+				add(gstr(b, "id"))
+			}
+		}
+	} else {
+		firstErr = err
+	}
+	if r, err := mc.graph("/me/accounts", map[string]string{"fields": "business", "limit": "100"}); err == nil {
+		for _, it := range dataList(r) {
+			if p, ok := it.(map[string]any); ok {
+				if bz, ok := p["business"].(map[string]any); ok {
+					add(gstr(bz, "id"))
+				}
+			}
+		}
+	} else if firstErr == nil {
+		firstErr = err
+	}
+
+	if len(ids) == 0 {
+		return ids, firstErr
+	}
+	return ids, nil
 }
 
 // Instagram — IG business accounts linked to the token's Pages (may be empty if
@@ -1148,7 +1253,8 @@ func (h *MetaHandler) IGConversations(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"configured": false})
 		return
 	}
-	if b, ok := h.getCache("ig:conversations", 60*time.Second); ok {
+	igKey := "ig:conversations:" + h.connSig()
+	if b, ok := h.getCache(igKey, 60*time.Second); ok {
 		c.JSON(http.StatusOK, b)
 		return
 	}
@@ -1245,7 +1351,7 @@ func (h *MetaHandler) IGConversations(c *gin.Context) {
 	if len(convs) == 0 && limited != "" {
 		out["limited"] = limited
 	}
-	h.setCache("ig:conversations", out)
+	h.setCache(igKey, out)
 	c.JSON(http.StatusOK, out)
 }
 

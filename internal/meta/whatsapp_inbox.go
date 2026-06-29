@@ -199,9 +199,9 @@ func (h *MetaHandler) WASend(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "phone_number_id, to, dan text wajib"})
 		return
 	}
-	mc := h.client()
-	if !mc.configured() {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "token Meta belum diset"})
+	mc, ok := h.clientForPhone(req.PhoneNumberID)
+	if !ok || !mc.configured() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "token Meta belum diset / tidak ada akun yang mengakses nomor ini"})
 		return
 	}
 	res, err := mc.graphPost("/"+req.PhoneNumberID+"/messages", map[string]any{
