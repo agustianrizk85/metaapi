@@ -129,11 +129,6 @@ func (mc metaClient) baseURL(path string) string {
 	return host + "/" + mc.ver + path
 }
 
-// client resolves the credentials for this request from the env token.
-func (h *MetaHandler) client() metaClient {
-	return metaClient{token: h.envToken, ver: h.ver, businessID: h.envBusinessID, adAccount: h.envAdAccount, http: h.http}
-}
-
 func (mc metaClient) configured() bool { return mc.token != "" }
 
 // rangePreset maps the UI `range` query param to a Meta Graph `date_preset`.
@@ -160,9 +155,9 @@ func rangePreset(c *gin.Context) string {
 
 // clients returns ONE Graph client per connected account so every data endpoint
 // aggregates across all accounts (total spend, all campaigns, all WABAs/IG). The
-// accounts come from the DB-backed connections (paste-token / OAuth); the single
-// env token is only a fallback when none are connected yet. Per-connection
-// businessID / adAccount override the env values when set.
+// accounts come ONLY from the DB-backed connections pasted in the dashboard — the
+// env token is not used as a source (paste a System User token to populate this).
+// Per-connection businessID overrides the env default when set.
 func (h *MetaHandler) clients() []metaClient {
 	var out []metaClient
 	if h.wa != nil {
@@ -182,9 +177,6 @@ func (h *MetaHandler) clients() []metaClient {
 				out = append(out, metaClient{token: cn.AccessToken, ver: h.ver, businessID: businessID, adAccount: cn.AdAccountID, label: label, http: h.http})
 			}
 		}
-	}
-	if len(out) == 0 && h.envToken != "" {
-		out = append(out, metaClient{token: h.envToken, ver: h.ver, businessID: h.envBusinessID, adAccount: h.envAdAccount, http: h.http})
 	}
 	return out
 }
