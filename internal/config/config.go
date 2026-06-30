@@ -26,6 +26,11 @@ type Config struct {
 	// webhook config.
 	WAWebhookVerifyToken string // WA_WEBHOOK_VERIFY_TOKEN
 
+	// Instagram Messaging webhook verify token. IG has a message-history API, so
+	// the webhook is only a realtime trigger (no persistence). Must match the Meta
+	// App's Instagram webhook config.
+	IGWebhookVerifyToken string // IG_WEBHOOK_VERIFY_TOKEN
+
 	// Storage. metaapi gained a small DB to persist WhatsApp conversations so the
 	// dashboard (and a future Android client) can read message history.
 	DBPath string // WA_DB_PATH — SQLite file
@@ -73,6 +78,7 @@ func Load() *Config {
 		MetaAppSecret:  getEnv("META_APP_SECRET", ""),
 
 		WAWebhookVerifyToken: getEnv("WA_WEBHOOK_VERIFY_TOKEN", "greenpark-wa-webhook"),
+		IGWebhookVerifyToken: getEnv("IG_WEBHOOK_VERIFY_TOKEN", "greenpark-ig-webhook"),
 		DBPath:               getEnv("WA_DB_PATH", "./metaapi.db"),
 
 		JWTSecret:   getEnv("JWT_SECRET", "dev-secret"),

@@ -37,6 +37,12 @@ type MetaHandler struct {
 	appSecret          string // verifies webhook X-Hub-Signature-256 (optional)
 	hub                *Hub   // realtime push to dashboards on new inbound (nil = off)
 
+	// Instagram realtime: unlike WhatsApp, IG has a conversation-history API, so we
+	// don't persist messages — the webhook only signals "something changed" and the
+	// dashboard refetches threads from Graph. nil hub = realtime off.
+	igHub         *Hub
+	igVerifyToken string // IG webhook verify token (must match Meta App config)
+
 	// Short-lived response cache: the Ads/Detail pulls fan out to dozens of
 	// Graph calls (20s+). A small TTL keeps repeated loads instant.
 	cmu   sync.Mutex
@@ -53,6 +59,25 @@ func (h *MetaHandler) EnableWhatsAppInbox(st *store.Store, verifyToken, appSecre
 
 // SetHub wires the realtime hub so the webhook can push live updates.
 func (h *MetaHandler) SetHub(hub *Hub) { h.hub = hub }
+
+// EnableInstagramRealtime wires the Instagram realtime hub + webhook verify token.
+// Called once at startup; the IG webhook bumps this hub on each inbound DM.
+func (h *MetaHandler) EnableInstagramRealtime(hub *Hub, verifyToken string) {
+	h.igHub = hub
+	h.igVerifyToken = verifyToken
+}
+
+// invalidateIGCache drops the cached IG conversation list so the next read after
+// a webhook bump fetches fresh data from Graph instead of serving the 60s cache.
+func (h *MetaHandler) invalidateIGCache() {
+	h.cmu.Lock()
+	for k := range h.cache {
+		if strings.HasPrefix(k, "ig:conversations:") {
+			delete(h.cache, k)
+		}
+	}
+	h.cmu.Unlock()
+}
 
 type cachedResp struct {
 	at   time.Time
@@ -1262,6 +1287,15 @@ func (h *MetaHandler) IGConversations(c *gin.Context) {
 		c.JSON(http.StatusOK, b)
 		return
 	}
+	out := h.igFetchConversations()
+	h.setCache(igKey, out)
+	c.JSON(http.StatusOK, out)
+}
+
+// igFetchConversations performs the concurrent fan-out across every IG-linked
+// Page and returns the assembled response body (no cache read/write). Shared by
+// the HTTP handler and the realtime poller.
+func (h *MetaHandler) igFetchConversations() gin.H {
 	pages := h.igPages()
 
 	// Fetch every page's threads concurrently. Without Advanced Access the
@@ -1355,8 +1389,7 @@ func (h *MetaHandler) IGConversations(c *gin.Context) {
 	if len(convs) == 0 && limited != "" {
 		out["limited"] = limited
 	}
-	h.setCache(igKey, out)
-	c.JSON(http.StatusOK, out)
+	return out
 }
 
 // IGMessages — full message history of one thread. `fromMe` marks our own

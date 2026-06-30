@@ -43,6 +43,13 @@ func main() {
 		log.Printf("WhatsApp inbox enabled (db=%s)", cfg.DBPath)
 	}
 
+	// Instagram realtime: the IG Messaging webhook bumps this hub on each inbound
+	// DM and the dashboard refetches threads from Graph (IG has a history API, so
+	// no persistence needed). ws=/api/meta/instagram/ws, webhook below.
+	igHub := meta.NewHub()
+	metaH.EnableInstagramRealtime(igHub, cfg.IGWebhookVerifyToken)
+	log.Printf("Instagram realtime enabled (webhook=/api/meta/instagram/webhook, ws=/api/meta/instagram/ws)")
+
 	// Accept the dashboard's Ed25519 SSO login token (verified via auth's JWKS)
 	// in addition to legacy HS256 tokens. Used by the HTTP middleware and the WS.
 	ssoV := auth.NewSSOVerifier(cfg.AuthJWKSURL, cfg.AuthIssuer)
@@ -63,8 +70,14 @@ func main() {
 		api.GET("/meta/whatsapp/webhook", metaH.WebhookVerify)
 		api.POST("/meta/whatsapp/webhook", metaH.WebhookReceive)
 
+		// Instagram Messaging webhook — PUBLIC (Meta calls it, no JWT). GET is the
+		// subscription handshake; POST delivers inbound DMs (signature-checked).
+		api.GET("/meta/instagram/webhook", metaH.IGWebhookVerify)
+		api.POST("/meta/instagram/webhook", metaH.IGWebhookReceive)
+
 		// Realtime push for the inbox (WS handshake carries token as query param).
 		api.GET("/meta/whatsapp/ws", hub.ServeWS(cfg.JWTSecret, ssoV))
+		api.GET("/meta/instagram/ws", igHub.ServeWS(cfg.JWTSecret, ssoV))
 
 		// Auth is unified with the master auth service (SSO) + legacy HS256.
 		authed := api.Group("")
