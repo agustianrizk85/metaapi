@@ -30,9 +30,14 @@ type Config struct {
 	// dashboard (and a future Android client) can read message history.
 	DBPath string // WA_DB_PATH — SQLite file
 
-	// Auth. Must match the marketing backend's JWT_SECRET so its tokens validate
-	// here (unified login — metaapi issues no tokens of its own).
-	JWTSecret string
+	// Auth. Accepts two token types:
+	//   - JWTSecret: legacy HS256 tokens (shared with the marketing backend).
+	//   - AuthJWKSURL/AuthIssuer: Ed25519 SSO tokens from the master auth service
+	//     (the unified dashboard login). When AuthJWKSURL is set, metaapi verifies
+	//     the dashboard's own login token via auth's public keys — no token bridge.
+	JWTSecret   string
+	AuthJWKSURL string
+	AuthIssuer  string
 
 	// Serving.
 	FrontendDir string // path to built SPA (dist) to serve; empty = API only
@@ -70,7 +75,9 @@ func Load() *Config {
 		WAWebhookVerifyToken: getEnv("WA_WEBHOOK_VERIFY_TOKEN", "greenpark-wa-webhook"),
 		DBPath:               getEnv("WA_DB_PATH", "./metaapi.db"),
 
-		JWTSecret: getEnv("JWT_SECRET", "dev-secret"),
+		JWTSecret:   getEnv("JWT_SECRET", "dev-secret"),
+		AuthJWKSURL: getEnv("AUTH_JWKS_URL", "http://127.0.0.1:8090/.well-known/jwks.json"),
+		AuthIssuer:  getEnv("AUTH_ISSUER", ""), // empty = skip issuer check (sig+exp still verified)
 
 		FrontendDir: getEnv("FRONTEND_DIR", ""),
 		CORSOrigins: getEnv("CORS_ORIGINS", ""),

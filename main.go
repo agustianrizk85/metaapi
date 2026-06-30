@@ -56,8 +56,14 @@ func main() {
 
 		// Auth is unified with the marketing backend: tokens it issues are
 		// validated here against the shared JWT secret. metaapi has no login.
+		// Accept the dashboard's Ed25519 SSO login token (verified via auth's
+		// JWKS) in addition to legacy HS256 tokens.
+		ssoV := auth.NewSSOVerifier(cfg.AuthJWKSURL, cfg.AuthIssuer)
+		if ssoV != nil {
+			log.Printf("SSO token acceptance enabled (jwks=%s issuer=%s)", cfg.AuthJWKSURL, cfg.AuthIssuer)
+		}
 		authed := api.Group("")
-		authed.Use(auth.Middleware(cfg.JWTSecret))
+		authed.Use(auth.Middleware(cfg.JWTSecret, ssoV))
 		{
 			// Multi-account connection management (paste System User token).
 			// metaapi aggregates data across every connection.
