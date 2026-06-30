@@ -20,33 +20,38 @@ import (
 // Whichever validates first wins, so both the dashboard SSO login and the older
 // per-backend tokens keep working. sso may be nil (HS256 only).
 func Middleware(secret string, sso *SSOVerifier) gin.HandlerFunc {
-	key := []byte(secret)
 	return func(c *gin.Context) {
 		header := c.GetHeader("Authorization")
 		if !strings.HasPrefix(header, "Bearer ") {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing bearer token"})
 			return
 		}
-		raw := strings.TrimPrefix(header, "Bearer ")
-
-		// EdDSA SSO token (dashboard login) — try first when configured.
-		if sso != nil {
-			if _, err := sso.Verify(raw); err == nil {
-				c.Next()
-				return
-			}
-		}
-		// Legacy HS256 token (shared secret).
-		tok, err := jwt.Parse(raw, func(t *jwt.Token) (interface{}, error) {
-			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, jwt.ErrSignatureInvalid
-			}
-			return key, nil
-		})
-		if err == nil && tok.Valid {
-			c.Next()
+		if !TokenValid(secret, sso, strings.TrimPrefix(header, "Bearer ")) {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 			return
 		}
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+		c.Next()
 	}
+}
+
+// TokenValid reports whether a raw bearer token is acceptable — an EdDSA SSO
+// token (when a verifier is configured) OR a legacy HS256 token. Used by both
+// the HTTP middleware and the WebSocket handshake (which carries the token as a
+// query param since browsers can't set headers on a WS upgrade).
+func TokenValid(secret string, sso *SSOVerifier, raw string) bool {
+	if raw == "" {
+		return false
+	}
+	if sso != nil {
+		if _, err := sso.Verify(raw); err == nil {
+			return true
+		}
+	}
+	tok, err := jwt.Parse(raw, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, jwt.ErrSignatureInvalid
+		}
+		return []byte(secret), nil
+	})
+	return err == nil && tok.Valid
 }

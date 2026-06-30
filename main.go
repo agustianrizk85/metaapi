@@ -34,11 +34,20 @@ func main() {
 	// WhatsApp inbox storage — incoming messages arrive only via webhook, so we
 	// persist them. If the DB can't open we log and run without the inbox rather
 	// than crash the Graph proxy.
+	hub := meta.NewHub()
 	if st, err := store.Open(cfg.DBPath); err != nil {
 		log.Printf("WARNING: WhatsApp inbox disabled — DB open failed: %v", err)
 	} else {
 		metaH.EnableWhatsAppInbox(st, cfg.WAWebhookVerifyToken, cfg.MetaAppSecret)
+		metaH.SetHub(hub)
 		log.Printf("WhatsApp inbox enabled (db=%s)", cfg.DBPath)
+	}
+
+	// Accept the dashboard's Ed25519 SSO login token (verified via auth's JWKS)
+	// in addition to legacy HS256 tokens. Used by the HTTP middleware and the WS.
+	ssoV := auth.NewSSOVerifier(cfg.AuthJWKSURL, cfg.AuthIssuer)
+	if ssoV != nil {
+		log.Printf("SSO token acceptance enabled (jwks=%s issuer=%s)", cfg.AuthJWKSURL, cfg.AuthIssuer)
 	}
 
 	r := gin.Default()
@@ -54,14 +63,10 @@ func main() {
 		api.GET("/meta/whatsapp/webhook", metaH.WebhookVerify)
 		api.POST("/meta/whatsapp/webhook", metaH.WebhookReceive)
 
-		// Auth is unified with the marketing backend: tokens it issues are
-		// validated here against the shared JWT secret. metaapi has no login.
-		// Accept the dashboard's Ed25519 SSO login token (verified via auth's
-		// JWKS) in addition to legacy HS256 tokens.
-		ssoV := auth.NewSSOVerifier(cfg.AuthJWKSURL, cfg.AuthIssuer)
-		if ssoV != nil {
-			log.Printf("SSO token acceptance enabled (jwks=%s issuer=%s)", cfg.AuthJWKSURL, cfg.AuthIssuer)
-		}
+		// Realtime push for the inbox (WS handshake carries token as query param).
+		api.GET("/meta/whatsapp/ws", hub.ServeWS(cfg.JWTSecret, ssoV))
+
+		// Auth is unified with the master auth service (SSO) + legacy HS256.
 		authed := api.Group("")
 		authed.Use(auth.Middleware(cfg.JWTSecret, ssoV))
 		{

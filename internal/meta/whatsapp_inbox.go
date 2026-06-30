@@ -95,6 +95,7 @@ func (h *MetaHandler) WebhookReceive(c *gin.Context) {
 		c.Status(http.StatusOK)
 		return
 	}
+	anyNew := false
 	for _, e := range env.Entry {
 		for _, ch := range e.Changes {
 			v := ch.Value
@@ -106,7 +107,7 @@ func (h *MetaHandler) WebhookReceive(c *gin.Context) {
 				}
 			}
 			for _, m := range v.Messages {
-				_, _ = h.wa.SaveIncoming(&store.WAMessage{
+				isNew, _ := h.wa.SaveIncoming(&store.WAMessage{
 					WamID:         m.ID,
 					PhoneNumberID: v.Metadata.PhoneNumberID,
 					WabaID:        e.ID,
@@ -116,11 +117,18 @@ func (h *MetaHandler) WebhookReceive(c *gin.Context) {
 					Text:          messageText(m.Type, m.Text.Body, m.Button.Text),
 					Timestamp:     unixToTime(m.Timestamp),
 				})
+				if isNew {
+					anyNew = true
+				}
 			}
 			for _, st := range v.Statuses {
 				_ = h.wa.UpdateStatus(st.ID, st.Status)
 			}
 		}
+	}
+	// Push a live update to connected dashboards when something new landed.
+	if anyNew && h.hub != nil {
+		h.hub.Bump()
 	}
 	c.Status(http.StatusOK)
 }

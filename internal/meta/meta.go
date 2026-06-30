@@ -35,6 +35,7 @@ type MetaHandler struct {
 	wa                 *store.Store
 	waVerifyToken      string // webhook verify token (must match Meta App config)
 	appSecret          string // verifies webhook X-Hub-Signature-256 (optional)
+	hub                *Hub   // realtime push to dashboards on new inbound (nil = off)
 
 	// Short-lived response cache: the Ads/Detail pulls fan out to dozens of
 	// Graph calls (20s+). A small TTL keeps repeated loads instant.
@@ -49,6 +50,9 @@ func (h *MetaHandler) EnableWhatsAppInbox(st *store.Store, verifyToken, appSecre
 	h.waVerifyToken = verifyToken
 	h.appSecret = appSecret
 }
+
+// SetHub wires the realtime hub so the webhook can push live updates.
+func (h *MetaHandler) SetHub(hub *Hub) { h.hub = hub }
 
 type cachedResp struct {
 	at   time.Time
