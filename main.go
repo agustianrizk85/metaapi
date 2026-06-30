@@ -77,6 +77,12 @@ func main() {
 		api.GET("/meta/instagram/webhook", metaH.IGWebhookVerify)
 		api.POST("/meta/instagram/webhook", metaH.IGWebhookReceive)
 
+		// App Review callbacks — PUBLIC (Meta posts a signed_request). Deauthorize +
+		// data-deletion are required by "Business login settings" before review.
+		api.POST("/meta/instagram/deauthorize", metaH.Deauthorize)
+		api.POST("/meta/data-deletion", metaH.DataDeletion)
+		api.GET("/meta/data-deletion-status", metaH.DataDeletionStatus)
+
 		// Realtime push for the inbox (WS handshake carries token as query param).
 		api.GET("/meta/whatsapp/ws", hub.ServeWS(cfg.JWTSecret, ssoV))
 		api.GET("/meta/instagram/ws", igHub.ServeWS(cfg.JWTSecret, ssoV))
