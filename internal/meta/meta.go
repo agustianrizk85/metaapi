@@ -115,7 +115,18 @@ type metaClient struct {
 	businessID string
 	adAccount  string
 	label      string // connection label (Gp1/Gp2/…) — used as ad-account display name
+	host       string // API host; empty = graph.facebook.com. graph.instagram.com for IG-login.
 	http       *http.Client
+}
+
+// baseURL builds the versioned endpoint URL, defaulting to the Facebook Graph
+// host. IG-login clients set host to graph.instagram.com.
+func (mc metaClient) baseURL(path string) string {
+	host := mc.host
+	if host == "" {
+		host = "https://graph.facebook.com"
+	}
+	return host + "/" + mc.ver + path
 }
 
 // client resolves the credentials for this request from the env token.
@@ -214,7 +225,7 @@ func (h *MetaHandler) clientForPhone(phoneNumberID string) (metaClient, bool) {
 
 // graph performs an authenticated GET against the Graph API.
 func (mc metaClient) graph(path string, params map[string]string) (map[string]any, error) {
-	u, _ := url.Parse("https://graph.facebook.com/" + mc.ver + path)
+	u, _ := url.Parse(mc.baseURL(path))
 	q := u.Query()
 	q.Set("access_token", mc.token)
 	for k, v := range params {
@@ -1107,65 +1118,91 @@ func (mc metaClient) discoverBusinessIDs() ([]string, error) {
 	return ids, nil
 }
 
-// Instagram — IG business accounts linked to the token's Pages (may be empty if
-// no instagram_basic scope / no linked IG business account).
+// Instagram — the IG professional accounts connected via the Instagram API with
+// Instagram Login (each pasted as its own user token, stored in the DB). Returns
+// configured=true whenever the store is up so the dashboard can show the
+// "connect account" form even before any account is added.
 func (h *MetaHandler) Instagram(c *gin.Context) {
-	clients := h.clients()
-	if len(clients) == 0 {
+	if h.wa == nil {
 		c.JSON(http.StatusOK, gin.H{"configured": false})
 		return
 	}
-	allPages := []any{}
 	igs := []any{}
-	seen := map[string]bool{}
-	var firstErr string
-	for _, mc := range clients {
-		r, err := mc.graph("/me/accounts", map[string]string{
-			"fields": "id,name,fan_count,instagram_business_account{id,username,followers_count,media_count,profile_picture_url}",
-			"limit":  "50",
+	for _, a := range h.igAccounts() {
+		igs = append(igs, gin.H{
+			"connId":              a.ID,
+			"id":                  a.IGUserID,
+			"username":            a.Username,
+			"followers_count":     a.Followers,
+			"media_count":         a.MediaCount,
+			"profile_picture_url": a.ProfilePicture,
+			"page":                a.Name,
 		})
-		if err != nil {
-			if firstErr == "" {
-				firstErr = err.Error()
-			}
-			continue
-		}
-		for _, it := range dataList(r) {
-			p, _ := it.(map[string]any)
-			if p == nil {
-				continue
-			}
-			allPages = append(allPages, p)
-			if ig, ok := p["instagram_business_account"].(map[string]any); ok {
-				id := gstr(ig, "id")
-				if id != "" && seen[id] {
-					continue
-				}
-				seen[id] = true
-				ig["page"] = gstr(p, "name")
-				igs = append(igs, ig)
-			}
-		}
 	}
-	if len(allPages) == 0 && len(igs) == 0 && firstErr != "" {
-		c.JSON(http.StatusBadGateway, gin.H{"configured": true, "error": firstErr})
-		return
+	c.JSON(http.StatusOK, gin.H{"configured": true, "instagram": igs})
+}
+
+// igAccounts returns every connected IG-login account (empty on store/DB error).
+func (h *MetaHandler) igAccounts() []store.IGAccount {
+	if h.wa == nil {
+		return nil
 	}
-	c.JSON(http.StatusOK, gin.H{"configured": true, "pages": allPages, "instagram": igs})
+	accs, err := h.wa.ListIGAccounts()
+	if err != nil {
+		return nil
+	}
+	return accs
+}
+
+// findIGAccount resolves a connected account by its IG user id (the value the
+// frontend sends back as page_id).
+func (h *MetaHandler) findIGAccount(igUserID string) *store.IGAccount {
+	if h.wa == nil {
+		return nil
+	}
+	a, err := h.wa.FindIGAccount(igUserID)
+	if err != nil {
+		return nil
+	}
+	return a
+}
+
+// igClient builds a client for the Instagram API with Instagram Login
+// (graph.instagram.com), bound to one account's user access token.
+func (h *MetaHandler) igClient(token string, httpc *http.Client) metaClient {
+	if httpc == nil {
+		httpc = h.http
+	}
+	return metaClient{token: token, ver: h.ver, host: "https://graph.instagram.com", http: httpc}
+}
+
+// igSig is the IG conversation cache-key fragment — changes when the connected
+// account set changes, so connect/disconnect busts the cache.
+func (h *MetaHandler) igSig() string {
+	accs := h.igAccounts()
+	if len(accs) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(accs))
+	for _, a := range accs {
+		parts = append(parts, fmt.Sprintf("%d@%d", a.ID, a.UpdatedAt.Unix()))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
 }
 
 // ===================== INSTAGRAM INBOX (DM) =====================
 //
-// IG Direct messages are read/sent through the linked Facebook Page using the
-// PAGE access token (not the user token). Reading the conversation list of an
-// account that talks to non-app-role users requires Advanced Access to
-// instagram_manage_messages — until that is granted Graph returns a timeout
-// (#-2) which we surface verbatim via the `limited` field so the UI can explain
-// it instead of showing an empty inbox.
+// IG Direct messages are read/sent via the Instagram API with Instagram Login
+// (graph.instagram.com) using each account's own user access token (pasted via
+// the dashboard, stored in the DB, auto-refreshed). Reading the conversation
+// list of an account that talks to non-app-role users requires Advanced Access
+// to instagram_business_manage_messages — until that is granted Graph returns a
+// timeout which we surface via the `limited` field so the UI can explain it.
 
 // graphPost performs an authenticated POST with a JSON body (used to send DMs).
 func (mc metaClient) graphPost(path string, body map[string]any) (map[string]any, error) {
-	u, _ := url.Parse("https://graph.facebook.com/" + mc.ver + path)
+	u, _ := url.Parse(mc.baseURL(path))
 	q := u.Query()
 	q.Set("access_token", mc.token)
 	u.RawQuery = q.Encode()
@@ -1210,79 +1247,19 @@ func sanitizeIGError(raw string) string {
 	return raw
 }
 
-// igPage pairs a Facebook Page (with its own page token) to its linked IG
-// business account — everything needed to read/send that account's DMs.
-type igPage struct {
-	pageID    string
-	pageToken string
-	pageName  string
-	igID      string
-	igUser    string
-}
-
-// pageClient builds a request-scoped client bound to a page token.
-func (h *MetaHandler) pageClient(token string) metaClient {
-	return metaClient{token: token, ver: h.ver, http: h.http}
-}
-
-// igPages lists every IG-linked Page across all connected accounts, deduped.
-func (h *MetaHandler) igPages() []igPage {
-	var out []igPage
-	seen := map[string]bool{}
-	for _, mc := range h.clients() {
-		acc, err := mc.graph("/me/accounts", map[string]string{
-			"fields": "id,name,access_token,instagram_business_account{id,username}",
-			"limit":  "50",
-		})
-		if err != nil {
-			continue
-		}
-		for _, it := range dataList(acc) {
-			p, _ := it.(map[string]any)
-			if p == nil {
-				continue
-			}
-			ig, _ := p["instagram_business_account"].(map[string]any)
-			if ig == nil {
-				continue
-			}
-			pid := gstr(p, "id")
-			if pid == "" || seen[pid] {
-				continue
-			}
-			seen[pid] = true
-			out = append(out, igPage{
-				pageID:    pid,
-				pageToken: gstr(p, "access_token"),
-				pageName:  gstr(p, "name"),
-				igID:      gstr(ig, "id"),
-				igUser:    gstr(ig, "username"),
-			})
-		}
-	}
-	return out
-}
-
-func (h *MetaHandler) findIGPage(pageID string) *igPage {
-	for _, pg := range h.igPages() {
-		if pg.pageID == pageID {
-			p := pg
-			return &p
-		}
-	}
-	return nil
-}
-
-// IGConversations — list IG DM threads across every linked account. Each thread
-// carries the customer's name + IGSID (recipient for replies), last snippet, and
-// unread count. On the Advanced-Access timeout the list is empty and `limited`
-// holds Meta's explanation.
+// IGConversations — list IG DM threads across every connected IG-login account.
+// Each thread carries the customer's name + IGSID (recipient for replies), last
+// snippet, and unread count. Cached 60s; busted on webhook bump / connect.
 func (h *MetaHandler) IGConversations(c *gin.Context) {
-	if len(h.clients()) == 0 {
+	if h.wa == nil {
 		c.JSON(http.StatusOK, gin.H{"configured": false})
 		return
 	}
-	igKey := "ig:conversations:" + h.connSig()
+	if len(h.igAccounts()) == 0 {
+		c.JSON(http.StatusOK, gin.H{"configured": true, "conversations": []any{}, "accounts": 0})
+		return
+	}
+	igKey := "ig:conversations:" + h.igSig()
 	if b, ok := h.getCache(igKey, 60*time.Second); ok {
 		c.JSON(http.StatusOK, b)
 		return
@@ -1292,35 +1269,30 @@ func (h *MetaHandler) IGConversations(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
-// igFetchConversations performs the concurrent fan-out across every IG-linked
-// Page and returns the assembled response body (no cache read/write). Shared by
-// the HTTP handler and the realtime poller.
+// igFetchConversations fans out across every connected account, querying the
+// Instagram-login conversations endpoint (graph.instagram.com/me/conversations)
+// with each account's own token. Returns the assembled body (no cache).
 func (h *MetaHandler) igFetchConversations() gin.H {
-	pages := h.igPages()
-
-	// Fetch every page's threads concurrently. Without Advanced Access the
-	// conversations endpoint hangs until Meta's own timeout, so a sequential
-	// loop over N pages would stack N×~25s — fan out so the wall time is one
-	// page, and use a shorter client timeout so a hung call fails fast.
-	fastHTTP := &http.Client{Timeout: 12 * time.Second}
-	type pageResult struct {
+	accs := h.igAccounts()
+	fastHTTP := &http.Client{Timeout: 15 * time.Second}
+	type accResult struct {
 		convs   []gin.H
 		limited string
 	}
-	results := make([]pageResult, len(pages))
+	results := make([]accResult, len(accs))
 	var wg sync.WaitGroup
-	for i, pg := range pages {
+	for i, a := range accs {
 		wg.Add(1)
-		go func(i int, pg igPage) {
+		go func(i int, a store.IGAccount) {
 			defer wg.Done()
-			pmc := metaClient{token: pg.pageToken, ver: h.ver, http: fastHTTP}
-			res, err := pmc.graph("/"+pg.pageID+"/conversations", map[string]string{
+			mc := h.igClient(a.AccessToken, fastHTTP)
+			res, err := mc.graph("/me/conversations", map[string]string{
 				"platform": "instagram",
 				"fields":   "id,updated_time,unread_count,participants,messages.limit(1){message,from,created_time}",
 				"limit":    "50",
 			})
 			if err != nil {
-				results[i] = pageResult{limited: err.Error()}
+				results[i] = accResult{limited: err.Error()}
 				return
 			}
 			var convs []gin.H
@@ -1339,7 +1311,7 @@ func (h *MetaHandler) igFetchConversations() gin.H {
 						}
 						id := gstr(pp, "id")
 						user := gstr(pp, "username")
-						if id == pg.igID || user == pg.igUser {
+						if id == a.IGUserID || (user != "" && user == a.Username) {
 							continue
 						}
 						custID = id
@@ -1360,8 +1332,8 @@ func (h *MetaHandler) igFetchConversations() gin.H {
 				}
 				convs = append(convs, gin.H{
 					"id":          gstr(cm, "id"),
-					"pageId":      pg.pageID,
-					"igUser":      pg.igUser,
+					"pageId":      a.IGUserID, // carries the IG account id back for thread/send
+					"igUser":      a.Username,
 					"customer":    custName,
 					"recipientId": custID,
 					"snippet":     snippet,
@@ -1369,8 +1341,8 @@ func (h *MetaHandler) igFetchConversations() gin.H {
 					"unread":      gnum(cm, "unread_count"),
 				})
 			}
-			results[i] = pageResult{convs: convs}
-		}(i, pg)
+			results[i] = accResult{convs: convs}
+		}(i, a)
 	}
 	wg.Wait()
 
@@ -1385,29 +1357,29 @@ func (h *MetaHandler) igFetchConversations() gin.H {
 	sort.Slice(convs, func(i, j int) bool {
 		return gstr(convs[i], "updatedTime") > gstr(convs[j], "updatedTime")
 	})
-	out := gin.H{"configured": true, "conversations": convs, "accounts": len(pages)}
+	out := gin.H{"configured": true, "conversations": convs, "accounts": len(accs)}
 	if len(convs) == 0 && limited != "" {
 		out["limited"] = limited
 	}
 	return out
 }
 
-// IGMessages — full message history of one thread. `fromMe` marks our own
-// replies so the UI can render them on the right.
+// IGMessages — full message history of one thread. `page_id` carries the IG
+// account id; `fromMe` marks our own replies so the UI renders them on the right.
 func (h *MetaHandler) IGMessages(c *gin.Context) {
 	convID := c.Query("conversation_id")
-	pageID := c.Query("page_id")
-	if convID == "" || pageID == "" {
+	igID := c.Query("page_id")
+	if convID == "" || igID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "conversation_id & page_id wajib"})
 		return
 	}
-	pg := h.findIGPage(pageID)
-	if pg == nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "page tidak ditemukan / token tidak punya akses"})
+	a := h.findIGAccount(igID)
+	if a == nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "akun IG tidak ditemukan / token belum ditambah"})
 		return
 	}
-	pmc := h.pageClient(pg.pageToken)
-	res, err := pmc.graph("/"+convID, map[string]string{
+	mc := h.igClient(a.AccessToken, nil)
+	res, err := mc.graph("/"+convID, map[string]string{
 		"fields": "messages.limit(80){id,message,from,created_time}",
 	})
 	if err != nil {
@@ -1421,16 +1393,17 @@ func (h *MetaHandler) IGMessages(c *gin.Context) {
 			if m == nil {
 				continue
 			}
-			fromID := ""
+			fromID, fromUser := "", ""
 			if f, ok := m["from"].(map[string]any); ok {
 				fromID = gstr(f, "id")
+				fromUser = gstr(f, "username")
 			}
 			msgs = append(msgs, gin.H{
-				"id":      gstr(m, "id"),
-				"text":    gstr(m, "message"),
-				"time":    gstr(m, "created_time"),
-				"fromMe":  fromID == pg.igID,
-				"fromId":  fromID,
+				"id":     gstr(m, "id"),
+				"text":   gstr(m, "message"),
+				"time":   gstr(m, "created_time"),
+				"fromMe": fromID == a.IGUserID || (fromUser != "" && fromUser == a.Username),
+				"fromId": fromID,
 			})
 		}
 	}
@@ -1438,10 +1411,11 @@ func (h *MetaHandler) IGMessages(c *gin.Context) {
 	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}
-	c.JSON(http.StatusOK, gin.H{"messages": msgs, "igUser": pg.igUser})
+	c.JSON(http.StatusOK, gin.H{"messages": msgs, "igUser": a.Username})
 }
 
-// IGSend — reply to a thread. Sends to the customer's IGSID via the Page.
+// IGSend — reply to a thread via the Instagram-login send endpoint
+// (graph.instagram.com/me/messages). `page_id` carries the IG account id.
 func (h *MetaHandler) IGSend(c *gin.Context) {
 	var req struct {
 		PageID      string `json:"page_id"`
@@ -1456,16 +1430,15 @@ func (h *MetaHandler) IGSend(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "page_id, recipient_id, dan text wajib"})
 		return
 	}
-	pg := h.findIGPage(req.PageID)
-	if pg == nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "page tidak ditemukan / token tidak punya akses"})
+	a := h.findIGAccount(req.PageID)
+	if a == nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "akun IG tidak ditemukan / token belum ditambah"})
 		return
 	}
-	pmc := h.pageClient(pg.pageToken)
-	res, err := pmc.graphPost("/"+pg.pageID+"/messages", map[string]any{
-		"recipient":    map[string]string{"id": req.RecipientID},
-		"message":      map[string]string{"text": req.Text},
-		"messaging_type": "RESPONSE",
+	mc := h.igClient(a.AccessToken, nil)
+	res, err := mc.graphPost("/me/messages", map[string]any{
+		"recipient": map[string]string{"id": req.RecipientID},
+		"message":   map[string]string{"text": req.Text},
 	})
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})

@@ -51,7 +51,7 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := db.AutoMigrate(&WAMessage{}, &WAConversation{}, &MetaConnection{}, &MetaAppConfig{}); err != nil {
+	if err := db.AutoMigrate(&WAMessage{}, &WAConversation{}, &MetaConnection{}, &MetaAppConfig{}, &IGAccount{}); err != nil {
 		return nil, err
 	}
 	return &Store{db: db}, nil

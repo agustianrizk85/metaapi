@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"metaapi/internal/auth"
 	"metaapi/internal/config"
@@ -48,6 +49,7 @@ func main() {
 	// no persistence needed). ws=/api/meta/instagram/ws, webhook below.
 	igHub := meta.NewHub()
 	metaH.EnableInstagramRealtime(igHub, cfg.IGWebhookVerifyToken)
+	metaH.StartIGTokenRefresher(24 * time.Hour) // keep IG-login tokens alive forever
 	log.Printf("Instagram realtime enabled (webhook=/api/meta/instagram/webhook, ws=/api/meta/instagram/ws)")
 
 	// Accept the dashboard's Ed25519 SSO login token (verified via auth's JWKS)
@@ -101,6 +103,9 @@ func main() {
 			authed.GET("/meta/whatsapp/messages", metaH.WAMessages)
 			authed.POST("/meta/whatsapp/send", metaH.WASend)
 			authed.GET("/meta/instagram", metaH.Instagram)
+			authed.POST("/meta/instagram/connect", metaH.IGConnect)
+			authed.GET("/meta/instagram/accounts", metaH.IGAccounts)
+			authed.DELETE("/meta/instagram/accounts/:id", metaH.IGDisconnect)
 			authed.GET("/meta/instagram/conversations", metaH.IGConversations)
 			authed.GET("/meta/instagram/messages", metaH.IGMessages)
 			authed.POST("/meta/instagram/send", metaH.IGSend)
