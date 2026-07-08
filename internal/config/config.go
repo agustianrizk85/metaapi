@@ -33,7 +33,8 @@ type Config struct {
 
 	// Storage. metaapi gained a small DB to persist WhatsApp conversations so the
 	// dashboard (and a future Android client) can read message history.
-	DBPath string // WA_DB_PATH — SQLite file
+	DBPath      string // WA_DB_PATH — SQLite file (fallback / local dev)
+	DatabaseURL string // WA_DATABASE_URL — Postgres DSN; when set, overrides DBPath
 
 	// Auth. Accepts two token types:
 	//   - JWTSecret: legacy HS256 tokens (shared with the marketing backend).
@@ -88,6 +89,7 @@ func Load() *Config {
 		WAWebhookVerifyToken: getEnv("WA_WEBHOOK_VERIFY_TOKEN", "greenpark-wa-webhook"),
 		IGWebhookVerifyToken: getEnv("IG_WEBHOOK_VERIFY_TOKEN", "greenpark-ig-webhook"),
 		DBPath:               getEnv("WA_DB_PATH", "./metaapi.db"),
+		DatabaseURL:          getEnv("WA_DATABASE_URL", ""),
 
 		JWTSecret:   getEnv("JWT_SECRET", "dev-secret"),
 		AuthJWKSURL: getEnv("AUTH_JWKS_URL", "http://127.0.0.1:8090/.well-known/jwks.json"),

@@ -5,9 +5,11 @@
 package store
 
 import (
+	"strings"
 	"time"
 
 	"github.com/glebarez/sqlite"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
@@ -46,9 +48,18 @@ type WAConversation struct {
 
 type Store struct{ db *gorm.DB }
 
-// Open opens (creating if needed) the SQLite DB and migrates the schema.
-func Open(path string) (*Store, error) {
-	db, err := gorm.Open(sqlite.Open(path), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+// Open opens the store and migrates the schema. `dsn` selects the driver: a
+// Postgres DSN (postgres://… or a libpq key=value string) uses Postgres — the
+// central, persistent store shared with the rest of Greenpark; anything else is
+// treated as a SQLite file path (embedded fallback / local dev).
+func Open(dsn string) (*Store, error) {
+	var dial gorm.Dialector
+	if isPostgresDSN(dsn) {
+		dial = postgres.Open(dsn)
+	} else {
+		dial = sqlite.Open(dsn)
+	}
+	db, err := gorm.Open(dial, &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		return nil, err
 	}
@@ -56,6 +67,15 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	return &Store{db: db}, nil
+}
+
+// isPostgresDSN reports whether dsn names a Postgres database rather than a
+// SQLite file. It recognises both URL form (postgres://…, postgresql://…) and
+// the libpq key=value form (host=… user=…).
+func isPostgresDSN(dsn string) bool {
+	return strings.HasPrefix(dsn, "postgres://") ||
+		strings.HasPrefix(dsn, "postgresql://") ||
+		(strings.Contains(dsn, "host=") && strings.Contains(dsn, "user="))
 }
 
 // SaveIncoming stores an inbound message (idempotent on WamID) and bumps the

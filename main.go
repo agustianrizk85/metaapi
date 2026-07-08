@@ -36,12 +36,22 @@ func main() {
 	// persist them. If the DB can't open we log and run without the inbox rather
 	// than crash the Graph proxy.
 	hub := meta.NewHub()
-	if st, err := store.Open(cfg.DBPath); err != nil {
+	// Postgres (WA_DATABASE_URL) is the central persistent store; fall back to the
+	// embedded SQLite file (WA_DB_PATH) when no DSN is set.
+	dbDSN := cfg.DatabaseURL
+	if dbDSN == "" {
+		dbDSN = cfg.DBPath
+	}
+	if st, err := store.Open(dbDSN); err != nil {
 		log.Printf("WARNING: WhatsApp inbox disabled — DB open failed: %v", err)
 	} else {
 		metaH.EnableWhatsAppInbox(st, cfg.WAWebhookVerifyToken, cfg.MetaAppSecret)
 		metaH.SetHub(hub)
-		log.Printf("WhatsApp inbox enabled (db=%s)", cfg.DBPath)
+		driver := "sqlite"
+		if cfg.DatabaseURL != "" {
+			driver = "postgres"
+		}
+		log.Printf("WhatsApp inbox enabled (driver=%s)", driver)
 	}
 
 	// WhatsApp AI auto-reply. ONE shared Ollama key (set from the dashboard AI
