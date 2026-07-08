@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"metaapi/internal/aibot"
 	"metaapi/internal/store"
 
 	"github.com/gin-gonic/gin"
@@ -47,6 +48,28 @@ type MetaHandler struct {
 	// Graph calls (20s+). A small TTL keeps repeated loads instant.
 	cmu   sync.Mutex
 	cache map[string]cachedResp
+
+	// WhatsApp AI auto-reply. When aiAutoReply && ai.Configured(), each inbound
+	// customer text triggers an AI reply (sent within the 24h window). nil = off.
+	ai          *aibot.Client
+	aiAutoReply bool
+	aiPrompt    string
+}
+
+// defaultWAPrompt grounds the auto-reply bot as a Greenpark property CS agent.
+// Deliberately conservative: never invents prices/promos, defers to sales.
+const defaultWAPrompt = `Kamu adalah asisten customer service WhatsApp Greenpark Group, pengembang properti (perumahan) di Indonesia. Balas ramah, singkat, dan profesional dalam Bahasa Indonesia (2-4 kalimat). Bantu calon pembeli soal informasi umum: lokasi, tipe unit, fasilitas, dan proses pembelian. ATURAN PENTING: JANGAN mengarang harga, promo, diskon, ketersediaan unit, atau membuat janji spesifik — jika ditanya hal itu, jawab secara umum lalu tawarkan untuk menghubungkan ke tim sales. Jangan mengaku sebagai manusia bila ditanya. Jangan mengulang salam bila percakapan sudah berjalan.`
+
+// EnableAIAutoReply wires the Ollama client that auto-replies to inbound WA
+// messages. `on` toggles it; an empty prompt uses the built-in CS prompt.
+func (h *MetaHandler) EnableAIAutoReply(c *aibot.Client, on bool, prompt string) {
+	h.ai = c
+	h.aiAutoReply = on
+	if strings.TrimSpace(prompt) != "" {
+		h.aiPrompt = prompt
+	} else {
+		h.aiPrompt = defaultWAPrompt
+	}
 }
 
 // EnableWhatsAppInbox wires the persistence + webhook secrets for the WhatsApp
@@ -1052,7 +1075,7 @@ func (h *MetaHandler) WhatsApp(c *gin.Context) {
 					if ph, e := mc.graph("/"+id+"/phone_numbers", map[string]string{"fields": "display_phone_number,verified_name,quality_rating,code_verification_status,platform_type"}); e == nil {
 						entry["phones"] = dataList(ph)
 					}
-					if tpl, e := mc.graph("/"+id+"/message_templates", map[string]string{"fields": "name,status,category", "limit": "100"}); e == nil {
+					if tpl, e := mc.graph("/"+id+"/message_templates", map[string]string{"fields": "name,status,category,language", "limit": "100"}); e == nil {
 						entry["templates"] = dataList(tpl)
 					}
 					wabas = append(wabas, entry)
