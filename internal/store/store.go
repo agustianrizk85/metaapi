@@ -26,6 +26,7 @@ type WAMessage struct {
 	Type          string    `gorm:"size:24" json:"type"`     // text, image, …
 	Text          string    `gorm:"type:text" json:"text"`
 	Status        string    `gorm:"size:24" json:"status"` // sent/delivered/read/failed (outbound)
+	FailReason    string    `gorm:"column:fail_reason;type:text" json:"error"` // alasan gagal dari Meta (kode + judul)
 	Timestamp     time.Time `gorm:"index" json:"timestamp"`
 	CreatedAt     time.Time `json:"createdAt"`
 }
@@ -102,9 +103,15 @@ func (s *Store) touchConversation(m *WAMessage, incoming bool) {
 	s.db.Save(&conv)
 }
 
-// UpdateStatus applies a delivery-status callback to an outbound message.
-func (s *Store) UpdateStatus(wamID, status string) error {
-	return s.db.Model(&WAMessage{}).Where("wam_id = ?", wamID).Update("status", status).Error
+// UpdateStatus applies a delivery-status callback to an outbound message. When
+// the status is "failed", reason carries Meta's error (code + title) so the UI
+// can show WHY it failed; an empty reason never overwrites an existing one.
+func (s *Store) UpdateStatus(wamID, status, reason string) error {
+	updates := map[string]any{"status": status}
+	if reason != "" {
+		updates["fail_reason"] = reason
+	}
+	return s.db.Model(&WAMessage{}).Where("wam_id = ?", wamID).Updates(updates).Error
 }
 
 // Conversations lists threads newest-first, optionally scoped to one of our

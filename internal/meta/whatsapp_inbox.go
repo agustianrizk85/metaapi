@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -65,8 +67,17 @@ type webhookEnvelope struct {
 					} `json:"button"`
 				} `json:"messages"`
 				Statuses []struct {
-					ID     string `json:"id"`
-					Status string `json:"status"`
+					ID          string `json:"id"`
+					Status      string `json:"status"`
+					RecipientID string `json:"recipient_id"`
+					Errors      []struct {
+						Code      int    `json:"code"`
+						Title     string `json:"title"`
+						Message   string `json:"message"`
+						ErrorData struct {
+							Details string `json:"details"`
+						} `json:"error_data"`
+					} `json:"errors"`
 				} `json:"statuses"`
 			} `json:"value"`
 		} `json:"changes"`
@@ -122,7 +133,21 @@ func (h *MetaHandler) WebhookReceive(c *gin.Context) {
 				}
 			}
 			for _, st := range v.Statuses {
-				_ = h.wa.UpdateStatus(st.ID, st.Status)
+				reason := ""
+				if len(st.Errors) > 0 {
+					e := st.Errors[0]
+					reason = fmt.Sprintf("#%d %s", e.Code, e.Title)
+					switch {
+					case e.ErrorData.Details != "":
+						reason += " — " + e.ErrorData.Details
+					case e.Message != "":
+						reason += " — " + e.Message
+					}
+				}
+				if st.Status == "failed" {
+					log.Printf("WA send FAILED wamid=%s to=%s reason=%q", st.ID, st.RecipientID, reason)
+				}
+				_ = h.wa.UpdateStatus(st.ID, st.Status, reason)
 			}
 		}
 	}
