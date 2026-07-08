@@ -163,10 +163,13 @@ func (h *MetaHandler) WebhookReceive(c *gin.Context) {
 		h.hub.Bump()
 	}
 	// AI auto-reply (off the webhook path — the Graph call is slow and Meta needs
-	// a fast 200). Each new inbound customer text gets one AI reply.
-	if h.aiAutoReply && h.ai.Configured() {
-		for _, t := range toReply {
-			go h.autoReplyTo(t[0], t[1])
+	// a fast 200). Each new inbound customer text gets one AI reply. Gated on the
+	// live DB setting so it can be toggled from the UI without a restart.
+	if len(toReply) > 0 {
+		if _, _, on := h.waAI(); on {
+			for _, t := range toReply {
+				go h.autoReplyTo(t[0], t[1])
+			}
 		}
 	}
 	c.Status(http.StatusOK)
@@ -365,7 +368,8 @@ func (h *MetaHandler) WASendTemplate(c *gin.Context) {
 // Grounded on the recent thread history so it stays in context.
 func (h *MetaHandler) autoReplyTo(pnid, contact string) {
 	defer func() { _ = recover() }() // a bad reply must never take down the webhook
-	if h.ai == nil || !h.ai.Configured() {
+	client, prompt, on := h.waAI()
+	if !on {
 		return
 	}
 	msgs, err := h.wa.Messages(pnid, contact, 14)
@@ -390,7 +394,7 @@ func (h *MetaHandler) autoReplyTo(pnid, contact string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
 	defer cancel()
-	reply, err := h.ai.Reply(ctx, h.aiPrompt, hist)
+	reply, err := client.Reply(ctx, prompt, hist)
 	if err != nil {
 		log.Printf("WA autoreply: AI err: %v", err)
 		return

@@ -45,6 +45,42 @@ type MetaAppConfig struct {
 
 const metaAppConfigID = 1
 
+// WAAISetting is the runtime config for the WhatsApp AI auto-reply (singleton
+// row id=1). Set dynamically from the UI — no env, no redeploy. NOTE: it holds
+// NO api key: there is ONE shared Ollama key for the whole system (set from the
+// dashboard AI config, persisted by auth), which metaapi reads read-only.
+type WAAISetting struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Model     string    `gorm:"size:64" json:"model"`
+	AutoReply bool      `json:"autoReply"`
+	Prompt    string    `gorm:"type:text" json:"prompt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+const waAISettingID = 1
+
+// AISetting returns the singleton WA AI config, creating an empty row on first
+// use so callers never handle "not found".
+func (s *Store) AISetting() (*WAAISetting, error) {
+	var st WAAISetting
+	err := s.db.First(&st, waAISettingID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		st = WAAISetting{ID: waAISettingID}
+		if err := s.db.Create(&st).Error; err != nil {
+			return nil, err
+		}
+		return &st, nil
+	}
+	return &st, err
+}
+
+// SaveAISetting persists the singleton WA AI config.
+func (s *Store) SaveAISetting(st *WAAISetting) error {
+	st.ID = waAISettingID
+	st.UpdatedAt = time.Now()
+	return s.db.Save(st).Error
+}
+
 // ListConnections returns every connected account, active first then newest.
 func (s *Store) ListConnections() ([]MetaConnection, error) {
 	var out []MetaConnection

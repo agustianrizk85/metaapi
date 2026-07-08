@@ -3,7 +3,6 @@ package config
 import (
 	"os"
 	"strconv"
-	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -49,25 +48,13 @@ type Config struct {
 	FrontendDir string // path to built SPA (dist) to serve; empty = API only
 	CORSOrigins string // comma-separated allowed origins; empty = allow all
 
-	// WhatsApp AI auto-reply (Ollama Cloud). When AIAutoReply is on AND AIKey is
-	// set, metaapi auto-replies to every inbound WA text message. Replies go out
-	// within the 24h customer-service window, so free-form text is allowed (no
-	// template needed). Grounded on a customer-service system prompt (overridable).
-	AIKey          string // OLLAMA_API_KEY
-	AIModel        string // OLLAMA_MODEL (default glm-5.2:cloud)
-	AIEndpoint     string // OLLAMA_ENDPOINT (default https://ollama.com/v1)
-	AIAutoReply    bool   // WA_AI_AUTOREPLY — "1"/"true"/"on" to enable
-	AISystemPrompt string // WA_AI_SYSTEM_PROMPT — optional override of the CS prompt
-}
-
-func getEnvBool(key string, def bool) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
-	case "1", "true", "on", "yes":
-		return true
-	case "0", "false", "off", "no":
-		return false
-	}
-	return def
+	// WhatsApp AI auto-reply. There is ONE shared Ollama API KEY for the whole
+	// system: it's set from the dashboard AI config and persisted by the auth
+	// service to AIKeyFile; metaapi reads that same file (single source of truth,
+	// no re-entry). Only infra paths have env defaults — the key/model/toggle are
+	// dynamic (key via dashboard, toggle/model/prompt via the DB config endpoint).
+	AIEndpoint string // OLLAMA_ENDPOINT (default https://ollama.com/v1)
+	AIKeyFile  string // OLLAMA_KEY_FILE — the shared key file auth writes (default: auth's)
 }
 
 func getEnv(key, def string) string {
@@ -109,10 +96,7 @@ func Load() *Config {
 		FrontendDir: getEnv("FRONTEND_DIR", ""),
 		CORSOrigins: getEnv("CORS_ORIGINS", ""),
 
-		AIKey:          getEnv("OLLAMA_API_KEY", ""),
-		AIModel:        getEnv("OLLAMA_MODEL", "glm-5.2:cloud"),
-		AIEndpoint:     getEnv("OLLAMA_ENDPOINT", "https://ollama.com/v1"),
-		AIAutoReply:    getEnvBool("WA_AI_AUTOREPLY", false),
-		AISystemPrompt: getEnv("WA_AI_SYSTEM_PROMPT", ""),
+		AIEndpoint: getEnv("OLLAMA_ENDPOINT", "https://ollama.com/v1"),
+		AIKeyFile:  getEnv("OLLAMA_KEY_FILE", "/opt/apps/auth/data/ollama.key"),
 	}
 }

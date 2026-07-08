@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"metaapi/internal/aibot"
 	"metaapi/internal/auth"
 	"metaapi/internal/config"
 	"metaapi/internal/meta"
@@ -45,19 +44,12 @@ func main() {
 		log.Printf("WhatsApp inbox enabled (db=%s)", cfg.DBPath)
 	}
 
-	// WhatsApp AI auto-reply (Ollama Cloud). Active only when a key is set AND
-	// WA_AI_AUTOREPLY is on: each inbound customer text gets an AI reply, sent
-	// within the 24h window so free-form text is allowed (no template needed).
-	aiBot := aibot.New(cfg.AIKey, cfg.AIModel, cfg.AIEndpoint)
-	metaH.EnableAIAutoReply(aiBot, cfg.AIAutoReply, cfg.AISystemPrompt)
-	switch {
-	case cfg.AIAutoReply && aiBot.Configured():
-		log.Printf("WhatsApp AI auto-reply ENABLED (model %s)", aiBot.Model())
-	case cfg.AIAutoReply:
-		log.Printf("WhatsApp AI auto-reply requested but OLLAMA_API_KEY empty — disabled")
-	default:
-		log.Printf("WhatsApp AI auto-reply OFF (set WA_AI_AUTOREPLY=1 + OLLAMA_API_KEY to enable)")
-	}
+	// WhatsApp AI auto-reply. ONE shared Ollama key (set from the dashboard AI
+	// config, persisted by auth at cfg.AIKeyFile) — metaapi reads it read-only, no
+	// re-entry. The on/off toggle, model and prompt are dynamic via the DB config
+	// endpoint (PUT /meta/whatsapp/ai-config). No env for the key.
+	metaH.SetAIConfig(cfg.AIEndpoint, cfg.AIKeyFile)
+	log.Printf("WhatsApp AI auto-reply: shared key file=%s, toggle via /api/meta/whatsapp/ai-config", cfg.AIKeyFile)
 
 	// Instagram realtime: the IG Messaging webhook bumps this hub on each inbound
 	// DM and the dashboard refetches threads from Graph (IG has a history API, so
@@ -124,6 +116,8 @@ func main() {
 			authed.GET("/meta/whatsapp/messages", metaH.WAMessages)
 			authed.POST("/meta/whatsapp/send", metaH.WASend)
 			authed.POST("/meta/whatsapp/send-template", metaH.WASendTemplate)
+			authed.GET("/meta/whatsapp/ai-config", metaH.WAAIConfig)
+			authed.PUT("/meta/whatsapp/ai-config", metaH.WASaveAIConfig)
 			authed.GET("/meta/instagram", metaH.Instagram)
 			authed.POST("/meta/instagram/connect", metaH.IGConnect)
 			authed.GET("/meta/instagram/accounts", metaH.IGAccounts)

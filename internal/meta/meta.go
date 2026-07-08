@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,27 +50,124 @@ type MetaHandler struct {
 	cmu   sync.Mutex
 	cache map[string]cachedResp
 
-	// WhatsApp AI auto-reply. When aiAutoReply && ai.Configured(), each inbound
-	// customer text triggers an AI reply (sent within the 24h window). nil = off.
-	ai          *aibot.Client
-	aiAutoReply bool
-	aiPrompt    string
+	// WhatsApp AI auto-reply. Fully DYNAMIC: the model, on/off toggle and prompt
+	// live in the DB (store.WAAISetting), set at runtime from the UI — no env, no
+	// redeploy. The API KEY is REUSED from the one the dashboard already set (auth
+	// persists it to aiKeyFile), so it never has to be re-entered; a per-metaapi
+	// key in the DB overrides it if ever needed.
+	aiEndpoint string
+	aiKeyFile  string // path to the shared Ollama key file (auth's data/ollama.key)
 }
 
 // defaultWAPrompt grounds the auto-reply bot as a Greenpark property CS agent.
 // Deliberately conservative: never invents prices/promos, defers to sales.
 const defaultWAPrompt = `Kamu adalah asisten customer service WhatsApp Greenpark Group, pengembang properti (perumahan) di Indonesia. Balas ramah, singkat, dan profesional dalam Bahasa Indonesia (2-4 kalimat). Bantu calon pembeli soal informasi umum: lokasi, tipe unit, fasilitas, dan proses pembelian. ATURAN PENTING: JANGAN mengarang harga, promo, diskon, ketersediaan unit, atau membuat janji spesifik — jika ditanya hal itu, jawab secara umum lalu tawarkan untuk menghubungkan ke tim sales. Jangan mengaku sebagai manusia bila ditanya. Jangan mengulang salam bila percakapan sudah berjalan.`
 
-// EnableAIAutoReply wires the Ollama client that auto-replies to inbound WA
-// messages. `on` toggles it; an empty prompt uses the built-in CS prompt.
-func (h *MetaHandler) EnableAIAutoReply(c *aibot.Client, on bool, prompt string) {
-	h.ai = c
-	h.aiAutoReply = on
-	if strings.TrimSpace(prompt) != "" {
-		h.aiPrompt = prompt
-	} else {
-		h.aiPrompt = defaultWAPrompt
+// SetAIConfig sets the Ollama base URL and the path to the ONE shared Ollama key
+// file — the single key the dashboard already sets (persisted by auth). metaapi
+// reads it read-only, so there is a single API key for the whole system.
+func (h *MetaHandler) SetAIConfig(endpoint, keyFile string) {
+	h.aiEndpoint = endpoint
+	h.aiKeyFile = keyFile
+}
+
+// sharedAIKey reads the one shared Ollama key (set from the dashboard AI config,
+// persisted by auth). Empty ⇒ the key hasn't been set yet.
+func (h *MetaHandler) sharedAIKey() string {
+	if h.aiKeyFile == "" {
+		return ""
 	}
+	b, err := os.ReadFile(h.aiKeyFile)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// waAI builds the AI client from the shared key + the DYNAMIC per-metaapi setting
+// (on/off toggle, model, prompt). Returns on=false when auto-reply is off or the
+// shared key isn't set yet. Prompt falls back to the built-in CS prompt.
+func (h *MetaHandler) waAI() (client *aibot.Client, prompt string, on bool) {
+	if h.wa == nil {
+		return nil, "", false
+	}
+	st, err := h.wa.AISetting()
+	if err != nil || !st.AutoReply {
+		return nil, "", false
+	}
+	key := h.sharedAIKey()
+	if key == "" {
+		return nil, "", false
+	}
+	p := strings.TrimSpace(st.Prompt)
+	if p == "" {
+		p = defaultWAPrompt
+	}
+	return aibot.New(key, st.Model, h.aiEndpoint), p, true
+}
+
+// WAAIConfig returns the WA AI auto-reply config. `configured` reflects the ONE
+// shared Ollama key (set from the dashboard) — no key is stored/returned here.
+func (h *MetaHandler) WAAIConfig(c *gin.Context) {
+	keySet := h.sharedAIKey() != ""
+	if h.wa == nil {
+		c.JSON(http.StatusOK, gin.H{"configured": keySet, "autoReply": false, "model": "", "prompt": ""})
+		return
+	}
+	st, err := h.wa.AISetting()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"configured": keySet, // true = the shared dashboard key is set
+		"autoReply":  st.AutoReply,
+		"model":      st.Model,
+		"prompt":     st.Prompt,
+	})
+}
+
+// WASaveAIConfig sets the WA AI auto-reply toggle/model/prompt at runtime (no
+// restart). It does NOT take an API key — the key is the single shared one set
+// from the dashboard AI config (persisted by auth). Any field may be omitted.
+func (h *MetaHandler) WASaveAIConfig(c *gin.Context) {
+	if h.wa == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "WhatsApp inbox belum aktif"})
+		return
+	}
+	var req struct {
+		Model     *string `json:"model"`
+		AutoReply *bool   `json:"autoReply"`
+		Prompt    *string `json:"prompt"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	st, err := h.wa.AISetting()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Model != nil {
+		st.Model = strings.TrimSpace(*req.Model)
+	}
+	if req.AutoReply != nil {
+		st.AutoReply = *req.AutoReply
+	}
+	if req.Prompt != nil {
+		st.Prompt = strings.TrimSpace(*req.Prompt)
+	}
+	if err := h.wa.SaveAISetting(st); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"configured": h.sharedAIKey() != "",
+		"autoReply":  st.AutoReply,
+		"model":      st.Model,
+		"prompt":     st.Prompt,
+	})
 }
 
 // EnableWhatsAppInbox wires the persistence + webhook secrets for the WhatsApp
