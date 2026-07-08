@@ -20,7 +20,7 @@ type MetaConnection struct {
 	Label          string     `gorm:"size:160" json:"label"`
 	MetaUserID     string     `gorm:"size:64;index" json:"meta_user_id"`
 	MetaUserName   string     `gorm:"size:160" json:"meta_user_name"`
-	AccessToken    string     `gorm:"size:1024" json:"-"` // server-side only
+	AccessToken    string     `gorm:"type:text" json:"-"` // server-side only
 	TokenExpiresAt *time.Time `json:"token_expires_at"`
 	BusinessID     string     `gorm:"size:64" json:"business_id"`
 	AdAccountID    string     `gorm:"size:64" json:"ad_account_id"`

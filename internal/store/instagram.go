@@ -12,10 +12,10 @@ type IGAccount struct {
 	IGUserID       string     `gorm:"uniqueIndex;size:64" json:"id"` // IG account id; recipient/from resolve against this
 	Username       string     `gorm:"size:160" json:"username"`
 	Name           string     `gorm:"size:160" json:"name"`
-	ProfilePicture string     `gorm:"size:512" json:"profile_picture_url"`
+	ProfilePicture string     `gorm:"type:text" json:"profile_picture_url"` // IG CDN URLs can exceed 512 chars
 	Followers      int        `json:"followers_count"`
 	MediaCount     int        `json:"media_count"`
-	AccessToken    string     `gorm:"size:1024" json:"-"` // server-side only, never serialised
+	AccessToken    string     `gorm:"type:text" json:"-"` // server-side only, never serialised
 	TokenExpiresAt *time.Time `json:"token_expires_at"`
 	RefreshedAt    *time.Time `json:"refreshed_at"`
 	CreatedAt      time.Time  `json:"created_at"`
