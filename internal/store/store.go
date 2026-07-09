@@ -63,7 +63,7 @@ func Open(dsn string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := db.AutoMigrate(&WAMessage{}, &WAConversation{}, &MetaConnection{}, &MetaAppConfig{}, &IGAccount{}, &WAAISetting{}); err != nil {
+	if err := db.AutoMigrate(&WAMessage{}, &WAConversation{}, &MetaConnection{}, &MetaAppConfig{}, &IGAccount{}, &WAAISetting{}, &Project{}, &ProjectAccount{}, &ProjectSales{}); err != nil {
 		return nil, err
 	}
 	return &Store{db: db}, nil

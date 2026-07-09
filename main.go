@@ -135,6 +135,12 @@ func main() {
 			authed.GET("/meta/instagram/conversations", metaH.IGConversations)
 			authed.GET("/meta/instagram/messages", metaH.IGMessages)
 			authed.POST("/meta/instagram/send", metaH.IGSend)
+
+			// Projects (Proyek) — map a project to its WA/IG accounts + sales team
+			// (attribution, routing, per-project filtering). Managed from Admin.
+			authed.GET("/meta/projects", metaH.Projects)
+			authed.POST("/meta/projects", metaH.SaveProject)
+			authed.DELETE("/meta/projects/:id", metaH.DeleteProject)
 		}
 	}
 
