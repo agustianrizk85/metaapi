@@ -7,8 +7,38 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"metaapi/internal/auth"
 	"metaapi/internal/store"
 )
+
+// MyProjects returns only the projects the CALLER is assigned to as sales
+// (matched by the SSO login e-mail). For the field-sales Android app so a sales
+// person sees just their own projects + attributed chats. Empty e-mail (legacy
+// token) ⇒ empty list (use /meta/projects for the full list).
+func (h *MetaHandler) MyProjects(c *gin.Context) {
+	if h.wa == nil {
+		c.JSON(http.StatusOK, gin.H{"projects": []any{}, "email": ""})
+		return
+	}
+	email := auth.CurrentEmail(c)
+	all, err := h.wa.ListProjects()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	mine := make([]store.Project, 0, len(all))
+	if email != "" {
+		for _, p := range all {
+			for _, s := range p.Sales {
+				if strings.EqualFold(strings.TrimSpace(s.Email), email) {
+					mine = append(mine, p)
+					break
+				}
+			}
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"projects": mine, "email": email})
+}
 
 // Projects lists every project with its linked WA/IG accounts + sales team.
 func (h *MetaHandler) Projects(c *gin.Context) {

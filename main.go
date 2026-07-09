@@ -139,6 +139,7 @@ func main() {
 			// Projects (Proyek) — map a project to its WA/IG accounts + sales team
 			// (attribution, routing, per-project filtering). Managed from Admin.
 			authed.GET("/meta/projects", metaH.Projects)
+			authed.GET("/meta/my-projects", metaH.MyProjects) // caller's assigned projects (field sales)
 			authed.POST("/meta/projects", metaH.SaveProject)
 			authed.DELETE("/meta/projects/:id", metaH.DeleteProject)
 		}
