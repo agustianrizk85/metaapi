@@ -302,6 +302,33 @@ func (h *MetaHandler) clients() []metaClient {
 	return out
 }
 
+// clientsScoped narrows clients() to the ad-account ids passed in ?account=
+// (comma-separated, with or without the "act_" prefix). Empty/absent → all
+// clients, so existing callers are unaffected. Used to filter Ads per project.
+func (h *MetaHandler) clientsScoped(c *gin.Context) []metaClient {
+	all := h.clients()
+	raw := strings.TrimSpace(c.Query("account"))
+	if raw == "" {
+		return all
+	}
+	want := map[string]bool{}
+	for _, a := range strings.Split(raw, ",") {
+		if a = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(a), "act_")); a != "" {
+			want[a] = true
+		}
+	}
+	if len(want) == 0 {
+		return all
+	}
+	var out []metaClient
+	for _, cl := range all {
+		if want[strings.TrimPrefix(cl.adAccount, "act_")] {
+			out = append(out, cl)
+		}
+	}
+	return out
+}
+
 // connSig is a cache-key fragment that changes when the connection set or env
 // token changes, so connect/disconnect/edit busts the short-lived cache.
 func (h *MetaHandler) connSig() string {
@@ -453,13 +480,13 @@ func pickAccount(list []any, pinned string) map[string]any {
 // cost-per-result / CTR / CPC) across all accounts, results parsed from the
 // Meta `actions` field.
 func (h *MetaHandler) Ads(c *gin.Context) {
-	clients := h.clients()
+	clients := h.clientsScoped(c)
 	if len(clients) == 0 {
 		c.JSON(http.StatusOK, gin.H{"configured": false})
 		return
 	}
 	preset := rangePreset(c)
-	ckey := "ads:" + preset + ":" + h.connSig()
+	ckey := "ads:" + preset + ":" + c.Query("account") + ":" + h.connSig()
 	if b, ok := h.getCache(ckey, 90*time.Second); ok {
 		c.JSON(http.StatusOK, b)
 		return
@@ -736,13 +763,13 @@ func dailySorted(m map[string]*bdAgg) []gin.H {
 // Each segment label is summed across accounts so the cards reflect the whole
 // portfolio, not a single account.
 func (h *MetaHandler) AdsDetail(c *gin.Context) {
-	clients := h.clients()
+	clients := h.clientsScoped(c)
 	if len(clients) == 0 {
 		c.JSON(http.StatusOK, gin.H{"configured": false})
 		return
 	}
 	preset := rangePreset(c)
-	ckey := "detail:" + preset + ":" + h.connSig()
+	ckey := "detail:" + preset + ":" + c.Query("account") + ":" + h.connSig()
 	if b, ok := h.getCache(ckey, 90*time.Second); ok {
 		c.JSON(http.StatusOK, b)
 		return
