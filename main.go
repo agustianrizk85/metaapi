@@ -135,6 +135,10 @@ func main() {
 			authed.GET("/meta/instagram/conversations", metaH.IGConversations)
 			authed.GET("/meta/instagram/messages", metaH.IGMessages)
 			authed.POST("/meta/instagram/send", metaH.IGSend)
+			// IG comment moderation (reply to comments on posts).
+			authed.GET("/meta/instagram/media", metaH.IGMedia)
+			authed.GET("/meta/instagram/comments", metaH.IGComments)
+			authed.POST("/meta/instagram/comments/reply", metaH.IGCommentReply)
 
 			// Projects (Proyek) — map a project to its WA/IG accounts + sales team
 			// (attribution, routing, per-project filtering). Managed from Admin.
