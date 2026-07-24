@@ -12,13 +12,14 @@ import (
 // chats/leads to a project + salesperson, routing to that project's sales, and
 // filtering the dashboard per project.
 type Project struct {
-	ID        uint             `gorm:"primaryKey" json:"id"`
-	Name      string           `gorm:"size:160;index" json:"name"`
-	Note      string           `gorm:"type:text" json:"note"`
-	CreatedAt time.Time        `json:"createdAt"`
-	UpdatedAt time.Time        `json:"updatedAt"`
-	Accounts  []ProjectAccount `gorm:"foreignKey:ProjectID" json:"accounts"`
-	Sales     []ProjectSales   `gorm:"foreignKey:ProjectID" json:"sales"`
+	ID          uint                `gorm:"primaryKey" json:"id"`
+	Name        string              `gorm:"size:160;index" json:"name"`
+	Note        string              `gorm:"type:text" json:"note"`
+	CreatedAt   time.Time           `json:"createdAt"`
+	UpdatedAt   time.Time           `json:"updatedAt"`
+	Accounts    []ProjectAccount    `gorm:"foreignKey:ProjectID" json:"accounts"`
+	Sales       []ProjectSales      `gorm:"foreignKey:ProjectID" json:"sales"`
+	MasterNames []ProjectMasterName `gorm:"foreignKey:ProjectID" json:"masterNames"`
 }
 
 // ProjectAccount ties one Meta account to a project. Ref is the stable id we can
@@ -41,19 +42,31 @@ type ProjectSales struct {
 	Name      string `gorm:"size:160" json:"name"`
 }
 
-// ListProjects returns every project with its accounts + sales, ordered by name.
+// ProjectMasterName is one Perencanaan master-project name grouped under this
+// Proyek. A Proyek's own Name is a free label (e.g. "Team GP 1") for an
+// umbrella that can span several individual Perencanaan projects (phases /
+// blocks) — each one recorded here so reporting/relations can look them up.
+type ProjectMasterName struct {
+	ID        uint   `gorm:"primaryKey" json:"id"`
+	ProjectID uint   `gorm:"index" json:"projectId"`
+	Name      string `gorm:"size:160;index" json:"name"`
+}
+
+// ListProjects returns every project with its accounts + sales + related
+// Perencanaan master names, ordered by name.
 func (s *Store) ListProjects() ([]Project, error) {
 	var ps []Project
-	err := s.db.Preload("Accounts").Preload("Sales").Order("name asc").Find(&ps).Error
+	err := s.db.Preload("Accounts").Preload("Sales").Preload("MasterNames").Order("name asc").Find(&ps).Error
 	return ps, err
 }
 
-// SaveProject upserts a project (by ID) and REPLACES its account + sales sets
-// with the ones supplied — the admin UI always sends the full desired state.
+// SaveProject upserts a project (by ID) and REPLACES its account + sales +
+// master-name sets with the ones supplied — the admin UI always sends the
+// full desired state.
 func (s *Store) SaveProject(p *Project) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		accounts, sales := p.Accounts, p.Sales
-		p.Accounts, p.Sales = nil, nil // manage the links explicitly, not via assoc
+		accounts, sales, masterNames := p.Accounts, p.Sales, p.MasterNames
+		p.Accounts, p.Sales, p.MasterNames = nil, nil, nil // manage the links explicitly, not via assoc
 		if p.ID == 0 {
 			if err := tx.Create(p).Error; err != nil {
 				return err
@@ -69,12 +82,18 @@ func (s *Store) SaveProject(p *Project) error {
 			if err := tx.Where("project_id = ?", p.ID).Delete(&ProjectSales{}).Error; err != nil {
 				return err
 			}
+			if err := tx.Where("project_id = ?", p.ID).Delete(&ProjectMasterName{}).Error; err != nil {
+				return err
+			}
 		}
 		for i := range accounts {
 			accounts[i].ID, accounts[i].ProjectID = 0, p.ID
 		}
 		for i := range sales {
 			sales[i].ID, sales[i].ProjectID = 0, p.ID
+		}
+		for i := range masterNames {
+			masterNames[i].ID, masterNames[i].ProjectID = 0, p.ID
 		}
 		if len(accounts) > 0 {
 			if err := tx.Create(&accounts).Error; err != nil {
@@ -86,7 +105,12 @@ func (s *Store) SaveProject(p *Project) error {
 				return err
 			}
 		}
-		p.Accounts, p.Sales = accounts, sales
+		if len(masterNames) > 0 {
+			if err := tx.Create(&masterNames).Error; err != nil {
+				return err
+			}
+		}
+		p.Accounts, p.Sales, p.MasterNames = accounts, sales, masterNames
 		return nil
 	})
 }
@@ -98,6 +122,9 @@ func (s *Store) DeleteProject(id uint) error {
 			return err
 		}
 		if err := tx.Where("project_id = ?", id).Delete(&ProjectSales{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("project_id = ?", id).Delete(&ProjectMasterName{}).Error; err != nil {
 			return err
 		}
 		return tx.Delete(&Project{}, id).Error

@@ -93,6 +93,17 @@ func (h *MetaHandler) SaveProject(c *gin.Context) {
 		sales = append(sales, sp)
 	}
 	p.Sales = sales
+	masterNames := p.MasterNames[:0]
+	seenMN := map[string]bool{}
+	for _, mn := range p.MasterNames {
+		mn.Name = strings.TrimSpace(mn.Name)
+		if mn.Name == "" || seenMN[mn.Name] {
+			continue
+		}
+		seenMN[mn.Name] = true
+		masterNames = append(masterNames, mn)
+	}
+	p.MasterNames = masterNames
 
 	if err := h.wa.SaveProject(&p); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
